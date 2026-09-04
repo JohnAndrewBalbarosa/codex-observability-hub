@@ -62,10 +62,36 @@ Restart Codex after installing hooks.
 .\obs.cmd diagnose ERROR_GROUP_ID
 .\obs.cmd trace TRACE_ID
 .\obs.cmd runtime ingest --file PATH_TO_JSONL --match '"event"'
+.\obs.cmd git check --threshold 5
+.\obs.cmd git squash --message "Consolidate local Codex changes" `
+  --expected-head HEAD_FROM_CHECK --confirm-all-local-related
 ```
 
 Add this repository directory to `PATH` if you want `obs.cmd` available from any
 project.
+
+## Git commit counter and safe squash
+
+`obs.cmd git check` derives its counter from the configured GitHub upstream's
+current local tracking ref. It reports commits ahead/behind, counts unpushed
+commits that contain code, tests, migrations, or configuration changes, and
+recommends a push at the default threshold of five code commits. Documentation-
+only and media-only commits do not increment the counter. A successful push
+resets the derived count because those commits are no longer ahead of upstream.
+
+`obs.cmd git squash` only rewrites commits that have not reached the upstream.
+It refuses dirty worktrees, missing/non-GitHub upstreams, and branches that are
+behind or diverged. It also requires the reviewed HEAD from `git check` and an
+explicit confirmation that every unpushed commit is related to the same work.
+Before a soft squash it creates a recoverable ref under
+`refs/codex-observability/pre-squash/`. It never pushes or force-pushes; a normal
+push remains a separate, visible action after verification. Fetch before the
+check when an up-to-date remote comparison is required.
+
+Because the counter is derived from Git rather than a manually incremented
+number, every Codex account using the same worktree and branch sees the same
+value without another database table or mutable counter file. The stable project
+UUID remains available for correlation in the observability hub.
 
 ## Data model and privacy
 

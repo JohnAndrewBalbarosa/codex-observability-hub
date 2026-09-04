@@ -1,5 +1,14 @@
 # Codex Observability
 
+For repositories with a configured GitHub upstream, review and test each
+code-changing prompt, then commit only that prompt's changes locally. Run
+`obs.cmd git check --threshold 5`. Keep fewer than five code commits local. At
+the threshold, review every unpushed commit, confirm they are all related, use
+`obs.cmd git squash` with its reviewed-HEAD and confirmation safeguards when
+there are multiple commits, rerun relevant checks, and normal-push. An explicit
+request to push now bypasses only the threshold. Never include unrelated work,
+rewrite published history, or force-push without exact user authorization.
+
 Use `obs.cmd` for persistent project repositories. Before the first prompt that
 changes a repository, ensure it has `observability.project.toml`; if missing, run
 `obs.cmd project register --init`. Do not enroll dependency, cache, generated,

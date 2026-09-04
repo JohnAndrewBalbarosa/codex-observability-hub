@@ -31,6 +31,10 @@ SECRET_PATTERNS = re.compile(r"(?i)(password|passwd|secret|token|api[_-]?key|coo
 SECRET_ASSIGNMENT = re.compile(r"(?i)(password|passwd|secret|token|api[_-]?key|cookie|authorization|private[_-]?key)(\s*[:=]\s*)\S+")
 BEARER_VALUE = re.compile(r"(?i)Bearer\s+\S+")
 SOURCE_LOCATOR = re.compile(r"(?P<locator>(?:file:///)?[^\s]+\.(?:dart|js|jsx|mjs|ts|tsx|py|java|kt|swift|cs|go|rs):\d+(?::\d+)?)")
+NON_CODE_SUFFIXES = {
+    ".md", ".mdx", ".rst", ".txt", ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp",
+    ".svg", ".ico", ".mp3", ".mp4", ".mov", ".avi", ".csv",
+}
 
 
 def now() -> str:
@@ -295,6 +299,181 @@ def git_value(root: Path, *args: str) -> str:
         return ""
 
 
+def git_run(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", str(root), *args],
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        check=False,
+    )
+
+
+def require_git(root: Path, *args: str) -> str:
+    result = git_run(root, *args)
+    if result.returncode:
+        detail = (result.stderr or result.stdout or "git command failed").strip()[:500]
+        raise SystemExit(detail)
+    return result.stdout.strip()
+
+
+def is_github_remote(remote_url: str) -> bool:
+    value = remote_url.strip().lower()
+    return bool(
+        re.match(r"^(?:https?|git)://github\.com/", value)
+        or re.match(r"^ssh://(?:[^/@]+@)?github\.com(?::\d+)?/", value)
+        or re.match(r"^[^@\s]+@github\.com:", value)
+    )
+
+
+def commit_touches_code(root: Path, commit: str) -> bool:
+    files = require_git(root, "show", "--format=", "--name-only", "--no-renames", commit).splitlines()
+    for relative in files:
+        path = relative.strip()
+        if not path:
+            continue
+        lowered = path.lower().replace("\\", "/")
+        if lowered.startswith(("docs/", ".github/issue_template/")):
+            continue
+        if Path(lowered).suffix in NON_CODE_SUFFIXES:
+            continue
+        return True
+    return False
+
+
+def git_policy_status(start: Path | None = None, threshold: int = 5) -> dict[str, Any]:
+    if threshold < 1:
+        raise SystemExit("Threshold must be at least 1.")
+    root_text = git_value(start or Path.cwd(), "rev-parse", "--show-toplevel")
+    if not root_text:
+        raise SystemExit("Current directory is not inside a Git worktree.")
+    root = Path(root_text).resolve()
+    branch = git_value(root, "branch", "--show-current")
+    if not branch:
+        raise SystemExit("Current HEAD is detached; check out a branch before applying the Git policy.")
+    upstream = git_value(root, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
+    if not upstream:
+        raise SystemExit("Current branch has no configured upstream.")
+    remote_name = git_value(root, "config", "--get", f"branch.{branch}.remote")
+    if not remote_name or remote_name == ".":
+        raise SystemExit("Current branch is not tracking a remote repository.")
+    remote_url = git_value(root, "remote", "get-url", remote_name)
+    if not is_github_remote(remote_url):
+        raise SystemExit("Configured upstream is not hosted on github.com.")
+    counts = require_git(root, "rev-list", "--left-right", "--count", f"{upstream}...HEAD").split()
+    if len(counts) != 2:
+        raise SystemExit("Unable to determine ahead/behind commit counts.")
+    behind, ahead = (int(value) for value in counts)
+    commits = require_git(root, "rev-list", "--reverse", f"{upstream}..HEAD").splitlines() if ahead else []
+    code_commits = [commit for commit in commits if commit_touches_code(root, commit)]
+    found = project_config(root)
+    project_id = found[1]["project"]["id"] if found else None
+    clean = not bool(git_value(root, "status", "--porcelain=v1", "--untracked-files=all"))
+    threshold_reached = len(code_commits) >= threshold
+    safe_to_squash = ahead > 1 and behind == 0 and clean
+    return {
+        "schemaVersion": 1,
+        "projectId": project_id,
+        "counterSource": "git-upstream-range",
+        "branch": branch,
+        "remote": remote_name,
+        "upstream": upstream,
+        "head": require_git(root, "rev-parse", "HEAD"),
+        "aheadCommits": ahead,
+        "behindCommits": behind,
+        "codeCommits": len(code_commits),
+        "nonCodeCommits": ahead - len(code_commits),
+        "threshold": threshold,
+        "thresholdRemaining": max(0, threshold - len(code_commits)),
+        "thresholdReached": threshold_reached,
+        "pushRecommended": threshold_reached and ahead > 0 and behind == 0 and clean,
+        "squashRecommended": threshold_reached and safe_to_squash,
+        "workingTreeClean": clean,
+        "safeToSquash": safe_to_squash,
+    }
+
+
+def squash_local_commits(
+    message: str,
+    start: Path | None = None,
+    *,
+    expected_head: str,
+    all_local_commits_are_related: bool,
+) -> dict[str, Any]:
+    message = message.strip()
+    if not message:
+        raise SystemExit("A non-empty squash commit message is required.")
+    if not all_local_commits_are_related:
+        raise SystemExit("Refusing to squash without confirmation that every unpushed commit is related.")
+    status = git_policy_status(start)
+    root = Path(git_value(start or Path.cwd(), "rev-parse", "--show-toplevel")).resolve()
+    if status["head"] != expected_head.strip():
+        raise SystemExit("Refusing to squash: HEAD changed after the reviewed git check.")
+    if not status["workingTreeClean"]:
+        raise SystemExit("Refusing to squash: the worktree has staged, unstaged, or untracked changes.")
+    if status["behindCommits"]:
+        raise SystemExit("Refusing to squash: the branch is behind or diverged from its upstream.")
+    if status["aheadCommits"] < 2:
+        raise SystemExit("At least two unpushed commits are required to squash.")
+    original_head = require_git(root, "rev-parse", "HEAD")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    backup_ref = f"refs/codex-observability/pre-squash/{stamp}-{original_head[:12]}"
+    require_git(root, "update-ref", backup_ref, original_head)
+    try:
+        require_git(root, "reset", "--soft", status["upstream"])
+        require_git(root, "commit", "-m", message)
+    except BaseException:
+        git_run(root, "reset", "--soft", original_head)
+        raise
+    result = git_policy_status(root, status["threshold"])
+    result.update({
+        "squashedCommitCount": status["aheadCommits"],
+        "previousHead": original_head,
+        "currentHead": require_git(root, "rev-parse", "HEAD"),
+        "backupRef": backup_ref,
+    })
+    return result
+
+
+def record_git_policy_event(code: str, message: str, outcome: int, severity: int, attributes: dict[str, Any]) -> bool:
+    """Best-effort event recording; Git safety operations must still work if the hub is unavailable."""
+    try:
+        row = context_for(str(Path.cwd()))
+        if not row or not row["prompt_id"] or not row["execution_id"]:
+            return False
+        seq = int(row["sequence_no"]) + 1
+        event_time = now()
+        op = operation("event.emit", {
+            "eventId": uuid7(),
+            "executionId": row["execution_id"],
+            "projectId": row["project_id"],
+            "traceId": row["trace_id"],
+            "sequenceNo": seq,
+            "code": code,
+            "category": 1,
+            "severity": severity,
+            "outcome": outcome,
+            "component": "git-policy",
+            "messageSummary": message,
+            "attributes": attributes,
+        }, event_time)
+        conn = db()
+        try:
+            with conn:
+                conn.execute(
+                    "UPDATE context SET sequence_no=?,updated_at=? WHERE native_session=?",
+                    (seq, now(), row["native_session"]),
+                )
+        finally:
+            conn.close()
+        enqueue([op])
+        return True
+    except Exception:
+        print("Warning: unable to record the Git policy event; the Git operation result is unchanged.", file=sys.stderr)
+        return False
+
+
 def worktree_fingerprint(root: Path) -> str | None:
     """Hash tracked content changes plus bounded untracked-file content without retaining either."""
     status = git_value(root, "status", "--porcelain=v1", "--untracked-files=all")
@@ -527,6 +706,14 @@ def main() -> int:
     ingest.add_argument("--component", default="")
     ingest.add_argument("--commit", default="")
     ingest.add_argument("--max-events", type=int, default=1000)
+    git = sub.add_parser("git")
+    git_sub = git.add_subparsers(dest="git_command", required=True)
+    git_check = git_sub.add_parser("check")
+    git_check.add_argument("--threshold", type=int, default=5)
+    git_squash = git_sub.add_parser("squash")
+    git_squash.add_argument("--message", required=True)
+    git_squash.add_argument("--expected-head", required=True)
+    git_squash.add_argument("--confirm-all-local-related", action="store_true")
     sub.add_parser("flush")
     args = parser.parse_args()
 
@@ -556,6 +743,46 @@ def main() -> int:
         row = context_for(str(Path.cwd()))
         enqueue([operation("context.record", {"contextId":uuid7(),"projectId":found[1]["project"]["id"],"languageCode":"tl-en","visionSummary":args.vision,"architectureSummary":args.architecture,"currentGoalSummary":args.goal,"constraints":args.constraint,"sourcePromptId":row["prompt_id"] if row else None})])
     elif args.command == "runtime" and args.runtime_command == "ingest": ingest_runtime_events(args)
+    elif args.command == "git" and args.git_command == "check":
+        try:
+            result = git_policy_status(threshold=args.threshold)
+        except SystemExit as exc:
+            record_git_policy_event("git.policy.check_failed", str(exc)[:300], 3, 3, {"threshold": args.threshold})
+            raise
+        result["observabilityRecorded"] = record_git_policy_event(
+            "git.policy.checked",
+            "Reviewed the configured GitHub upstream commit threshold.",
+            1,
+            1,
+            {key: result[key] for key in (
+                "branch", "upstream", "aheadCommits", "behindCommits", "codeCommits",
+                "nonCodeCommits", "threshold", "thresholdReached", "pushRecommended",
+            )},
+        )
+        print(json.dumps(result, indent=2))
+    elif args.command == "git" and args.git_command == "squash":
+        try:
+            result = squash_local_commits(
+                args.message,
+                expected_head=args.expected_head,
+                all_local_commits_are_related=args.confirm_all_local_related,
+            )
+        except SystemExit as exc:
+            record_git_policy_event("git.local_history.squash_refused", str(exc)[:300], 3, 3, {})
+            raise
+        result["observabilityRecorded"] = record_git_policy_event(
+            "git.local_history.squashed",
+            "Consolidated reviewed unpushed commits and retained a recovery ref.",
+            1,
+            1,
+            {
+                "branch": result["branch"],
+                "upstream": result["upstream"],
+                "squashedCommitCount": result["squashedCommitCount"],
+                "backupRef": result["backupRef"],
+            },
+        )
+        print(json.dumps(result, indent=2))
     elif args.command == "flush": print(json.dumps({"flushed": flush()}))
     return 0
 

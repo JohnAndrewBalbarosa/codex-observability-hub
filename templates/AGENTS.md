@@ -3,18 +3,19 @@
 Apply this policy to every repository and every user prompt that causes file or codebase changes.
 
 1. Before editing, determine whether the current worktree belongs to a Git repository and inspect its remotes.
-2. If the repository already has a GitHub remote (a remote URL hosted on `github.com`), save the work before ending the prompt:
+2. If the repository already has a GitHub remote (a remote URL hosted on `github.com`), save code-changing work locally before ending the prompt:
    - inspect `git status` and review the agent-made diff;
    - run relevant checks when practical;
-   - commit only the changes made for the current prompt with a concise message;
-   - push the current branch to its configured GitHub upstream;
-   - report the commit hash, pushed branch, and checks run.
-3. Preserve unrelated user changes. Never add, commit, revert, overwrite, or discard them. If they overlap the requested work and cannot be separated safely, stop and ask the user.
-4. Never force-push, rewrite published history, or bypass branch protection unless the user explicitly requests and authorizes that exact action.
-5. If the directory is not a Git repository, or the repository has no GitHub remote, do not initialize Git, create a GitHub repository, add a remote, commit, or push merely because of this policy.
-6. Create or publish a repository only when the user explicitly asks. Once a repository is connected to the user's GitHub remote, apply the commit-and-push workflow to every later prompt that causes changes.
-7. Read-only questions, diagnostics, reviews, and explanations that make no file changes require no commit or push.
-8. If commit or push cannot complete because of authentication, permissions, conflicts, checks, or connectivity, preserve the worktree, report the blocker precisely, and do not claim the changes were pushed.
+   - commit only the changes made for the current prompt with a concise message; and
+   - run `obs.cmd git check --threshold 5` and report the code-commit count.
+3. If fewer than five code commits are ahead, keep them local. At five, review the complete upstream-to-HEAD range. If every unpushed commit is related, squash multiple commits with the reviewed HEAD and `--confirm-all-local-related`, rerun relevant checks, then normal-push the current branch to its configured upstream.
+4. An explicit user request to push now bypasses the threshold, but not diff review, checks, related-commit confirmation, safe local squash, or normal-push protections.
+5. Preserve unrelated user changes and commits. Never add, commit, squash, revert, overwrite, or discard them. If they overlap the requested work and cannot be separated safely, stop and ask the user.
+6. Never force-push, rewrite published history, or bypass branch protection unless the user explicitly requests and authorizes that exact action. The threshold workflow may rewrite only reviewed, unpushed commits.
+7. If the directory is not a Git repository, or the repository has no GitHub remote, do not initialize Git, create a GitHub repository, add a remote, commit, or push merely because of this policy.
+8. Create or publish a repository only when the user explicitly asks. Once connected to GitHub, apply this local-commit and threshold-push workflow to later code-changing prompts.
+9. Read-only questions, diagnostics, reviews, and explanations that make no file changes require no commit or push. Documentation-only and media-only commits do not increment the code threshold.
+10. If commit or push cannot complete because of authentication, permissions, conflicts, checks, or connectivity, preserve the worktree, report the blocker precisely, and do not claim the changes were pushed.
 
 # Engineering Design Principles
 

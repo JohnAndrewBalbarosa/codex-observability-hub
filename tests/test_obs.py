@@ -1,5 +1,6 @@
 import importlib.util
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,6 +12,76 @@ SPEC.loader.exec_module(obs)
 
 
 class ObservabilityCliTests(unittest.TestCase):
+    def git(self, root, *args):
+        return subprocess.run(
+            ["git", "-C", str(root), *args],
+            check=True,
+            text=True,
+            capture_output=True,
+        ).stdout.strip()
+
+    def test_git_policy_counts_code_commits_and_squashes_only_local_history(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            remote, work = base / "remote.git", base / "work"
+            self.git(base, "init", "--bare", str(remote))
+            self.git(base, "init", "-b", "main", str(work))
+            self.git(work, "config", "user.name", "Test User")
+            self.git(work, "config", "user.email", "test@example.invalid")
+            work.joinpath("app.py").write_text("print('base')\n", encoding="utf-8")
+            work.joinpath("observability.project.toml").write_text(
+                '[project]\nid="00000000-0000-7000-8000-000000000001"\nname="Example"\nslug="example"\nschema_version=1\n',
+                encoding="utf-8",
+            )
+            self.git(work, "add", "app.py", "observability.project.toml")
+            self.git(work, "commit", "-m", "base")
+            self.git(work, "remote", "add", "origin", f"https://github.com/example/project.git")
+            self.git(work, "config", "remote.origin.url", str(remote))
+            self.git(work, "push", "-u", "origin", "main")
+            self.git(work, "config", "remote.origin.url", "https://github.com/example/project.git")
+            self.git(work, "config", "remote.origin.pushurl", str(remote))
+            work.joinpath("notes.md").write_text("documentation only\n", encoding="utf-8")
+            self.git(work, "add", "notes.md")
+            self.git(work, "commit", "-m", "docs")
+            for index in range(5):
+                work.joinpath("app.py").write_text(f"print({index})\n", encoding="utf-8")
+                self.git(work, "add", "app.py")
+                self.git(work, "commit", "-m", f"code {index}")
+
+            status = obs.git_policy_status(work, threshold=5)
+            self.assertEqual(status["aheadCommits"], 6)
+            self.assertEqual(status["codeCommits"], 5)
+            self.assertEqual(status["nonCodeCommits"], 1)
+            self.assertTrue(status["thresholdReached"])
+            self.assertTrue(status["pushRecommended"])
+            self.assertTrue(status["safeToSquash"])
+
+            result = obs.squash_local_commits(
+                "squashed work",
+                work,
+                expected_head=status["head"],
+                all_local_commits_are_related=True,
+            )
+            self.assertEqual(result["squashedCommitCount"], 6)
+            self.assertEqual(result["aheadCommits"], 1)
+            self.assertTrue(result["backupRef"].startswith("refs/codex-observability/pre-squash/"))
+            self.assertEqual(self.git(work, "rev-parse", result["backupRef"]), result["previousHead"])
+
+    def test_git_policy_rejects_non_github_remote(self):
+        self.assertTrue(obs.is_github_remote("git@github.com:owner/repository.git"))
+        self.assertTrue(obs.is_github_remote("https://github.com/owner/repository.git"))
+        self.assertFalse(obs.is_github_remote("https://github.com.example.test/owner/repository.git"))
+        self.assertFalse(obs.is_github_remote("C:/github.com/owner/repository.git"))
+
+    def test_squash_requires_related_commit_confirmation(self):
+        with self.assertRaisesRegex(SystemExit, "every unpushed commit is related"):
+            obs.squash_local_commits(
+                "message",
+                Path.cwd(),
+                expected_head="unused",
+                all_local_commits_are_related=False,
+            )
+
     def test_redacts_secret_fields_recursively(self):
         value = obs.redact({"token": "secret", "nested": {"apiKey": "secret", "safe": "authorization=private Bearer hidden"}})
         self.assertEqual(value["token"], "[REDACTED]")
