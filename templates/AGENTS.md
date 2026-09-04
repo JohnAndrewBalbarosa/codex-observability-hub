@@ -3,7 +3,7 @@
 Apply this policy to every repository and every user prompt that causes file or codebase changes.
 
 1. Before editing, determine whether the current worktree belongs to a Git repository and inspect its remotes.
-2. If the repository already has a GitHub remote (a remote URL hosted on `github.com`), save code-changing work locally before ending the prompt:
+2. If the repository already has a GitHub remote (a remote URL hosted on `github.com`), save file-changing work locally before ending the prompt:
    - inspect `git status` and review the agent-made diff;
    - run relevant checks when practical;
    - commit only the changes made for the current prompt with a concise message; and
@@ -13,7 +13,7 @@ Apply this policy to every repository and every user prompt that causes file or 
 5. Preserve unrelated user changes and commits. Never add, commit, squash, revert, overwrite, or discard them. If they overlap the requested work and cannot be separated safely, stop and ask the user.
 6. Never force-push, rewrite published history, or bypass branch protection unless the user explicitly requests and authorizes that exact action. The threshold workflow may rewrite only reviewed, unpushed commits.
 7. If the directory is not a Git repository, or the repository has no GitHub remote, do not initialize Git, create a GitHub repository, add a remote, commit, or push merely because of this policy.
-8. Create or publish a repository only when the user explicitly asks. Once connected to GitHub, apply this local-commit and threshold-push workflow to later code-changing prompts.
+8. Create or publish a repository only when the user explicitly asks. Once connected to GitHub, apply this local-commit and threshold-push workflow to later file-changing prompts.
 9. Read-only questions, diagnostics, reviews, and explanations that make no file changes require no commit or push. Documentation-only and media-only commits do not increment the code threshold.
 10. If commit or push cannot complete because of authentication, permissions, conflicts, checks, or connectivity, preserve the worktree, report the blocker precisely, and do not claim the changes were pushed.
 
