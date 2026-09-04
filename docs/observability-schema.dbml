@@ -1,0 +1,214 @@
+// Paste into https://dbdiagram.io.
+// Each project_<uuid> PostgreSQL schema exposes filtered views of this model.
+
+Table projects {
+  project_id uuid [pk]
+  display_name text
+  slug text [unique]
+  status smallint
+  created_at timestamptz
+  last_seen_at timestamptz
+}
+
+Table project_schemas {
+  project_id uuid [pk, ref: > projects.project_id]
+  schema_name varchar(64) [unique]
+  schema_version integer
+  created_at timestamptz
+  last_verified_at timestamptz
+}
+
+Table project_aliases {
+  project_id uuid [ref: > projects.project_id]
+  alias_kind smallint
+  alias_hash bytea
+  is_current boolean
+  first_seen_at timestamptz
+  last_seen_at timestamptz
+  indexes { (project_id, alias_kind, alias_hash) [pk] }
+}
+
+Table project_context_versions {
+  context_id uuid [pk]
+  project_id uuid [ref: > projects.project_id]
+  version_no integer
+  language_code varchar(16)
+  vision_summary text
+  architecture_summary text
+  current_goal_summary text
+  constraints jsonb
+  source_prompt_id uuid
+  created_at timestamptz
+}
+
+Table agent_instances {
+  agent_instance_id uuid [pk]
+  instance_key varchar(80) [unique]
+  source_kind smallint
+  display_name varchar(160)
+  created_at timestamptz
+  last_seen_at timestamptz
+}
+
+Table sessions {
+  session_id uuid [pk]
+  project_id uuid [ref: > projects.project_id]
+  agent_instance_id uuid [ref: > agent_instances.agent_instance_id]
+  session_kind smallint
+  session_fingerprint bytea
+  status smallint
+  started_at timestamptz
+  ended_at timestamptz
+  created_at timestamptz
+}
+
+Table prompt_nodes {
+  prompt_id uuid [pk]
+  session_id uuid [ref: > sessions.session_id]
+  parent_prompt_id uuid [ref: > prompt_nodes.prompt_id]
+  ordinal integer
+  prompt_hmac bytea
+  raw_prompt text [note: 'Exact user prompt']
+  raw_result text [note: 'Exact assistant result when supplied by Stop hook']
+  language_code varchar(16)
+  summary text
+  intent text
+  target_system text
+  constraints jsonb
+  success_criteria jsonb
+  result_summary text
+  status smallint
+  created_at timestamptz
+  enriched_at timestamptz
+  completed_at timestamptz
+}
+
+Table code_versions {
+  code_version_id uuid [pk]
+  project_id uuid [ref: > projects.project_id]
+  commit_sha varchar(64)
+  branch_name varchar(240)
+  dirty_fingerprint bytea
+  build_version varchar(120)
+  created_at timestamptz
+}
+
+Table executions {
+  execution_id uuid [pk]
+  project_id uuid [ref: > projects.project_id]
+  session_id uuid [ref: > sessions.session_id]
+  prompt_id uuid [ref: > prompt_nodes.prompt_id]
+  parent_execution_id uuid [ref: > executions.execution_id]
+  code_version_id uuid [ref: > code_versions.code_version_id]
+  execution_kind smallint
+  attempt_no integer
+  trace_id bytea
+  status smallint
+  outcome smallint
+  started_at timestamptz
+  ended_at timestamptz
+  duration_ms bigint
+  result_summary text
+}
+
+Table change_attributions {
+  attribution_id uuid [pk]
+  execution_id uuid [ref: > executions.execution_id]
+  code_version_id uuid [ref: > code_versions.code_version_id]
+  artifact_kind smallint
+  locator_hash bytea
+  locator_label text
+  content_hash bytea
+  metadata jsonb
+  created_at timestamptz
+}
+
+Table components {
+  component_id bigint [pk, increment]
+  project_id uuid [ref: > projects.project_id]
+  component_kind smallint
+  name varchar(160)
+}
+
+Table event_definitions {
+  event_definition_id bigint [pk, increment]
+  code varchar(160) [unique]
+  category smallint
+  default_severity smallint
+  description varchar(500)
+}
+
+Table events {
+  event_id uuid
+  execution_id uuid [ref: > executions.execution_id]
+  component_id bigint [ref: > components.component_id]
+  event_definition_id bigint [ref: > event_definitions.event_definition_id]
+  sequence_no bigint
+  severity smallint
+  outcome smallint
+  trace_id bytea
+  span_id bytea
+  parent_span_id bytea
+  message_summary varchar(500)
+  attributes jsonb
+  raw_payload jsonb [note: 'Exact tool input/output or structured runtime event']
+  occurred_at timestamptz
+  ingested_at timestamptz
+  indexes { (event_id, occurred_at) [pk] }
+}
+
+Table error_groups {
+  error_group_id uuid [pk]
+  project_id uuid [ref: > projects.project_id]
+  fingerprint bytea
+  exception_class varchar(240)
+  normalized_summary varchar(500)
+  first_seen_at timestamptz
+  last_seen_at timestamptz
+  occurrence_count bigint
+  status smallint
+}
+
+Table error_occurrences {
+  event_id uuid
+  event_occurred_at timestamptz
+  error_group_id uuid [ref: > error_groups.error_group_id]
+  handled boolean
+  retryable boolean
+  stack_hash bytea
+  top_frame varchar(500)
+  indexes { (event_id, event_occurred_at) [pk] }
+}
+
+Table event_payloads {
+  event_id uuid
+  event_occurred_at timestamptz
+  encoding smallint
+  redaction_version integer
+  compressed_payload bytea
+  expires_at timestamptz
+  indexes { (event_id, event_occurred_at) [pk] }
+}
+
+Table daily_rollups {
+  project_id uuid [ref: > projects.project_id]
+  day date
+  event_definition_id bigint [ref: > event_definitions.event_definition_id]
+  severity smallint
+  outcome smallint
+  event_count bigint
+  duration_sum_ms bigint
+  duration_max_ms bigint
+  indexes { (project_id, day, event_definition_id, severity, outcome) [pk] }
+}
+
+Table one_day_log_rollups [note: 'VIEW over daily_rollups; preferred user-facing name'] {
+  project_id uuid
+  day date
+  event_definition_id bigint
+  severity smallint
+  outcome smallint
+  event_count bigint
+  duration_sum_ms bigint
+  duration_max_ms bigint
+}

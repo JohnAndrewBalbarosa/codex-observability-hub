@@ -1,0 +1,17 @@
+{
+  "name": "codex-observability-hub",
+  "private": true,
+  "description": "Local-first structured observability for Codex on Windows",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.mjs",
+    "test": "node --test tests/server.test.mjs tests/browser-logger.test.cjs"
+  },
+  "dependencies": {
+    "fastify": "^5.6.0",
+    "pg": "^8.16.0",
+    "uuid": "^13.0.0",
+    "zod": "^4.1.0"
+  }
+}

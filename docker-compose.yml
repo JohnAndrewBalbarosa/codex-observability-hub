@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: codex-observability-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: observability
+      POSTGRES_USER: observability
+      POSTGRES_PASSWORD: ${OBS_POSTGRES_PASSWORD:?Run scripts/setup.ps1 first}
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - codex-observability-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U observability -d observability"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  codex-observability-data:

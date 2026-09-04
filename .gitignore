@@ -1,0 +1,11 @@
+node_modules/
+var/
+__pycache__/
+*.py[cod]
+.env
+.env.*
+!.env.example
+observability.project.toml
+*.log
+*.sqlite*
+*.db
